@@ -1,153 +1,213 @@
-
-import math
 import gym
-from gym import spaces, logger
-from gym.utils import seeding
+print(gym.__version__)
+import keras
+print(keras.__version__)
+import random
+import math
 import numpy as np
+from collections import deque
 
-class CartPoleEnv(gym.Env):
+
+import gym
+env = gym.make('CartPole-v0')
+for i_episode in range(20):
+    observation = env.reset()
+    for t in range(100):
+        env.render()
+        print(observation)
+        action = env.action_space.sample()
+        observation, reward, done, info = env.step(action)
+        if done:
+            print("Episode finished after {} timesteps".format(t+1))
+            break
+            
+# Training Parameters
+n_episodes=1000
+n_win_ticks=195
+max_env_steps=None
+gamma=1.0 # Discount factor. Consideration of future rewards - same policies (the ones that balance the pole) are optimal 
+          # at every step.
+epsilon=1.0 # Exploration. Agent chooses action that it believes has the best long-term effect with probability 1- epsilon,
+            # and it chooses an action uniformly at random, otherwise.  
+epsilon_min=0.01
+epsilon_decay=0.995
+alpha=0.01 # the learning rate, determines to what extent the newly acquired information will override the old information. 
+alpha_decay=0.01
+batch_size=64
+monitor=False
+quiet=False
+
+# Environment Parameters
+memory = deque(maxlen=100000)
+env = gym.make('CartPole-v0')
+if max_env_steps is not None: env.max_episode_steps = max_env_steps
+from collections import deque
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.optimizers import Adam
+
+# Model Definition
+model = Sequential()
+model.add(Dense(24, input_dim=4, activation='relu'))
+model.add(Dense(48, activation='relu'))
+model.add(Dense(2, activation='relu'))
+model.compile(loss='mse', optimizer=Adam(lr=alpha, decay=alpha_decay))
+
+#defining function 
+def remember(state, action, reward, next_state, done):
+    memory.append((state, action, reward, next_state, done))
+
+def choose_action(state, epsilon):
+    return env.action_space.sample() if (np.random.random() <= epsilon) else np.argmax(
+        model.predict(state))
+
+def get_epsilon(t):
+    return max(epsilon_min, min(epsilon, 1.0 - math.log10((t + 1) * epsilon_decay)))
+
+def preprocess_state(state):
+    return np.reshape(state, [1, 4])
+
+def replay(batch_size, epsilon):
+    x_batch, y_batch = [], []
+    minibatch = random.sample(
+        memory, min(len(memory), batch_size))
+    for state, action, reward, next_state, done in minibatch:
+        y_target = model.predict(state)
+        y_target[0][action] = reward if done else reward + gamma * np.max(model.predict(next_state)[0])
+        x_batch.append(state[0])
+        y_batch.append(y_target[0])
+
+    model.fit(np.array(x_batch), np.array(y_batch), batch_size=len(x_batch), verbose=0)
     
-    metadata = {
-        'render.modes': ['human', 'rgb_array'],
-        'video.frames_per_second' : 50
-    }
+    if epsilon > epsilon_min:
+        epsilon *= epsilon_decay
 
-    def __init__(self):
-        self.gravity = 9.8
-        self.masscart = 1.0
-        self.masspole = 0.1
-        self.total_mass = (self.masspole + self.masscart)
-        self.length = 0.5 # actually half the pole's length
-        self.polemass_length = (self.masspole * self.length)
-        self.force_mag = 10.0
-        self.tau = 0.02  # seconds between state updates
-        self.kinematics_integrator = 'euler'
+#defining run function 
+def run():
+    scores = deque(maxlen=100)
 
-        # Angle at which to fail the episode
-        self.theta_threshold_radians = 12 * 2 * math.pi / 360
-        self.x_threshold = 2.4
+    for e in range(n_episodes):
+        state = preprocess_state(env.reset())
+        done = False
+        i = 0
+        while not done:
+            action = choose_action(state, get_epsilon(e))
+            next_state, reward, done, _ = env.step(action)
+            env.render()
+            next_state = preprocess_state(next_state)
+            remember(state, action, reward, next_state, done)
+            state = next_state
+            i += 1
 
-        # Angle limit set to 2 * theta_threshold_radians so failing observation is still within bounds
-        high = np.array([
-            self.x_threshold * 2,
-            np.finfo(np.float32).max,
-            self.theta_threshold_radians * 2,
-            np.finfo(np.float32).max])
+        scores.append(i)
+        mean_score = np.mean(scores)
+        if mean_score >= n_win_ticks and e >= 100:
+            if not quiet: print('Ran {} episodes. Solved after {} trials'.format(e, e - 100))
+            return e - 100
+        if e % 100 == 0 and not quiet:
+            print('[Episode {}] - Mean survival time over last 100 episodes was {} ticks.'.format(e, mean_score))
+   
+        replay(batch_size, epsilon)
 
-        self.action_space = spaces.Discrete(2)
-        self.observation_space = spaces.Box(-high, high, dtype=np.float32)
+    if not quiet: print('Did not solve after {} episodes'.format(e))
+    return e
 
-        self.seed()
-        self.viewer = None
-        self.state = None
+#training the network 
+import random
+import gym
+import math
+import numpy as np
+from collections import deque
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.optimizers import Adam
 
-        self.steps_beyond_done = None
+# Training Parameters
+n_episodes=1000
+n_win_ticks=195
+max_env_steps=None
+gamma=1.0
+epsilon=1.0
+epsilon_min=0.01
+epsilon_decay=0.995
+alpha=0.01
+alpha_decay=0.01
+batch_size=64
+monitor=False
+quiet=False
 
-    def seed(self, seed=None):
-        self.np_random, seed = seeding.np_random(seed)
-        return [seed]
+# Environment Parameters
+memory = deque(maxlen=100000)
+env = gym.make('CartPole-v0')
+if max_env_steps is not None: env.max_episode_steps = max_env_steps
 
-    def step(self, action):
-        assert self.action_space.contains(action), "%r (%s) invalid"%(action, type(action))
-        state = self.state
-        x, x_dot, theta, theta_dot = state
-        force = self.force_mag if action==1 else -self.force_mag
-        costheta = math.cos(theta)
-        sintheta = math.sin(theta)
-        temp = (force + self.polemass_length * theta_dot * theta_dot * sintheta) / self.total_mass
-        thetaacc = (self.gravity * sintheta - costheta* temp) / (self.length * (4.0/3.0 - self.masspole * costheta * costheta / self.total_mass))
-        xacc  = temp - self.polemass_length * thetaacc * costheta / self.total_mass
-        if self.kinematics_integrator == 'euler':
-            x  = x + self.tau * x_dot
-            x_dot = x_dot + self.tau * xacc
-            theta = theta + self.tau * theta_dot
-            theta_dot = theta_dot + self.tau * thetaacc
-        else: # semi-implicit euler
-            x_dot = x_dot + self.tau * xacc
-            x  = x + self.tau * x_dot
-            theta_dot = theta_dot + self.tau * thetaacc
-            theta = theta + self.tau * theta_dot
-        self.state = (x,x_dot,theta,theta_dot)
-        done =  x < -self.x_threshold \
-                or x > self.x_threshold \
-                or theta < -self.theta_threshold_radians \
-                or theta > self.theta_threshold_radians
-        done = bool(done)
+from collections import deque
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.optimizers import Adam
 
-        if not done:
-            reward = 1.0
-        elif self.steps_beyond_done is None:
-            # Pole just fell!
-            self.steps_beyond_done = 0
-            reward = 1.0
-        else:
-            if self.steps_beyond_done == 0:
-                logger.warn("You are calling 'step()' even though this environment has already returned done = True. You should always call 'reset()' once you receive 'done = True' -- any further steps are undefined behavior.")
-            self.steps_beyond_done += 1
-            reward = 0.0
+# Model Definition
+model = Sequential()
+model.add(Dense(24, input_dim=4, activation='relu'))
+model.add(Dense(48, activation='relu'))
+model.add(Dense(2, activation='relu'))
+model.compile(loss='mse', optimizer=Adam(lr=alpha, decay=alpha_decay))
 
-        return np.array(self.state), reward, done, {}
+def remember(state, action, reward, next_state, done):
+    memory.append((state, action, reward, next_state, done))
 
-    def reset(self):
-        self.state = self.np_random.uniform(low=-0.05, high=0.05, size=(4,))
-        self.steps_beyond_done = None
-        return np.array(self.state)
+def choose_action(state, epsilon):
+    return env.action_space.sample() if (np.random.random() <= epsilon) else np.argmax(
+        model.predict(state))
 
-    def render(self, mode='human'):
-        screen_width = 600
-        screen_height = 400
+def get_epsilon(t):
+    return max(epsilon_min, min(epsilon, 1.0 - math.log10((t + 1) * epsilon_decay)))
 
-        world_width = self.x_threshold*2
-        scale = screen_width/world_width
-        carty = 100 # TOP OF CART
-        polewidth = 10.0
-        polelen = scale * (2 * self.length)
-        cartwidth = 50.0
-        cartheight = 30.0
+def preprocess_state(state):
+    return np.reshape(state, [1, 4])
 
-        if self.viewer is None:
-            from gym.envs.classic_control import rendering
-            self.viewer = rendering.Viewer(screen_width, screen_height)
-            l,r,t,b = -cartwidth/2, cartwidth/2, cartheight/2, -cartheight/2
-            axleoffset =cartheight/4.0
-            cart = rendering.FilledPolygon([(l,b), (l,t), (r,t), (r,b)])
-            self.carttrans = rendering.Transform()
-            cart.add_attr(self.carttrans)
-            self.viewer.add_geom(cart)
-            l,r,t,b = -polewidth/2,polewidth/2,polelen-polewidth/2,-polewidth/2
-            pole = rendering.FilledPolygon([(l,b), (l,t), (r,t), (r,b)])
-            pole.set_color(.8,.6,.4)
-            self.poletrans = rendering.Transform(translation=(0, axleoffset))
-            pole.add_attr(self.poletrans)
-            pole.add_attr(self.carttrans)
-            self.viewer.add_geom(pole)
-            self.axle = rendering.make_circle(polewidth/2)
-            self.axle.add_attr(self.poletrans)
-            self.axle.add_attr(self.carttrans)
-            self.axle.set_color(.5,.5,.8)
-            self.viewer.add_geom(self.axle)
-            self.track = rendering.Line((0,carty), (screen_width,carty))
-            self.track.set_color(0,0,0)
-            self.viewer.add_geom(self.track)
+def replay(batch_size, epsilon):
+    x_batch, y_batch = [], []
+    minibatch = random.sample(
+        memory, min(len(memory), batch_size))
+    for state, action, reward, next_state, done in minibatch:
+        y_target = model.predict(state)
+        y_target[0][action] = reward if done else reward + gamma * np.max(model.predict(next_state)[0])
+        x_batch.append(state[0])
+        y_batch.append(y_target[0])
 
-            self._pole_geom = pole
+    model.fit(np.array(x_batch), np.array(y_batch), batch_size=len(x_batch), verbose=0)
+    
+    if epsilon > epsilon_min:
+        epsilon *= epsilon_decay    
+        
+def run():
+    scores = deque(maxlen=100)
 
-        if self.state is None: return None
+    for e in range(n_episodes):
+        state = preprocess_state(env.reset())
+        done = False
+        i = 0
+        while not done:
+            action = choose_action(state, get_epsilon(e))
+            next_state, reward, done, _ = env.step(action)
+            env.render()
+            next_state = preprocess_state(next_state)
+            remember(state, action, reward, next_state, done)
+            state = next_state
+            i += 1
 
-        # Edit the pole polygon vertex
-        pole = self._pole_geom
-        l,r,t,b = -polewidth/2,polewidth/2,polelen-polewidth/2,-polewidth/2
-        pole.v = [(l,b), (l,t), (r,t), (r,b)]
+        scores.append(i)
+        mean_score = np.mean(scores)
+        if mean_score >= n_win_ticks and e >= 100:
+            if not quiet: print('Ran {} episodes. Solved after {} trials'.format(e, e - 100))
+            return e - 100
+        if e % 20 == 0 and not quiet:
+            print('[Episode {}] - Mean survival time over last 100 episodes was {} ticks.'.format(e, mean_score))
+   
+        replay(batch_size, get_epsilon(e))
 
-        x = self.state
-        cartx = x[0]*scale+screen_width/2.0 # MIDDLE OF CART
-        self.carttrans.set_translation(cartx, carty)
-        self.poletrans.set_rotation(-x[2])
+    if not quiet: print('Did not solve after {} episodes'.format(e))
+    return e
 
-        return self.viewer.render(return_rgb_array = mode=='rgb_array')
-
-    def close(self):
-        if self.viewer:
-            self.viewer.close()
-            self.viewer = None
-© 2018 GitH
+run()
